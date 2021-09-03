@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -57,8 +58,13 @@ func NewMemoryStorage() *MemoryStorage {
 
 func (s *MemoryStorage) Set(kv *KeyValue) error {
 	if kv.Ttl < 0 {
-		return errors.New("Check the Ttl.")
+		return errors.New("Check the ttl.")
 	}
+
+	if err := checkKey(kv.Sense); err != nil {
+		return err
+	}
+
 	s.Lock()
 	s.data[kv.Key] = Value{
 		Value: kv.Sense,
@@ -67,7 +73,7 @@ func (s *MemoryStorage) Set(kv *KeyValue) error {
 			TtlSec:    kv.Ttl,
 		},
 	}
-	defer s.Unlock()
+	s.Unlock()
 	return nil
 }
 
@@ -76,14 +82,14 @@ func (s *MemoryStorage) Get(rv *RequestValue) (interface{}, error) {
 	currentSec := time.Now().Unix()
 	value, exist := s.data[rv.Key]
 	if !exist {
-		defer s.RUnlock()
+		s.RUnlock()
 		return nil, errors.New("Does not exist.")
 	}
 	if value.Timer.TtlSec == 0 || value.Timer.CreateSec+value.Timer.TtlSec >= currentSec {
-		defer s.RUnlock()
+		s.RUnlock()
 		return value.Value, nil
 	}
-	defer s.RUnlock()
+	s.RUnlock()
 	go s.Delete(rv)
 	return nil, errors.New("The key has run out of life time.")
 }
@@ -100,25 +106,31 @@ func (s *MemoryStorage) Delete(rv *RequestValue) error {
 
 func (s *MemoryStorage) Keys(pv *PatternValue) ([]string, error) {
 	s.RLock()
+	currentSec := time.Now().Unix()
 	var keys []string
-	for k, _ := range s.data {
-		if checkPattern(k) {
+	for k, value := range s.data {
+		if checkPattern(pv.Pattern, k) && (value.Timer.TtlSec == 0 || value.Timer.CreateSec+value.Timer.TtlSec >= currentSec) {
 			keys = append(keys, k)
 		}
 	}
-	defer s.RUnlock()
+	s.RUnlock()
 	return keys, nil
 }
-func checkPattern(key string) bool {
-	pattern := `^` + strings.Replace(strings.Replace(key, `*`, `.*`, -1), `?`, `.`, -1) + `$`
+
+func checkPattern(search string, key string) bool {
+	pattern := `^` + strings.Replace(strings.Replace(search, `*`, `.*`, -1), `?`, `.`, -1) + `$`
+	fmt.Println(pattern)
 	matched, _ := regexp.MatchString(pattern, key)
 	return matched
 }
+
 func checkKey(i interface{}) error {
 	_, convertString := i.(string)
 	_, convertList := i.([]interface{})
+	_, convertMapString := i.(map[string]interface{})
+	/*Last convertion – convert in "True" map. In this realization must be false, but in some vertion may be true.*/
 	_, convertMap := i.(map[interface{}]interface{})
-	if convertString || convertList || convertMap {
+	if convertString || convertList || convertMapString || convertMap {
 		return nil
 	}
 	return errors.New("Something wrong. Check your value.")
